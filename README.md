@@ -7,6 +7,7 @@ Current MVP:
 - Target either main or test channel.
 - Post now or schedule for a specific datetime.
 - Old-style IEEE CS look with richer markdown text and optional bottom logo image.
+- Autonomous meme drop: randomly posts one local meme every 24-48 hours.
 
 ## 1) Setup
 
@@ -73,3 +74,10 @@ Examples for `members`:
 - `period=week` uses a simpler and less flashy style, with logo as a small thumbnail if set.
 - Each posted leaderboard gets default reactions: `🔥` and Pixel emoji `1465668039256047671`.
 - Hype button reply is randomized from multiple hype messages.
+- Hype button is limited to one press per user per leaderboard message.
+- Hype presses are persisted in SQLite (`HYPE_DB_PATH`) so restart does not reset limits.
+- Meme drop runs automatically after bot startup with no user command.
+- Meme drop picks one random image from `MEME_DROP_FOLDER` and posts it to `MEME_DROP_CHANNEL_ID` (or `MAIN_CHANNEL_ID` if meme channel is unset).
+- Meme drop delay is randomized between 24 and 48 hours for each cycle.
+- Supported meme file types: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`.
+- If meme folder is missing/empty, Pixel logs an internal error and skips that cycle.

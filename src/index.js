@@ -1,7 +1,11 @@
 require("dotenv").config();
+const fs = require("fs");
+const path = require("path");
+const Database = require("better-sqlite3");
 
 const {
   ActionRowBuilder,
+  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
@@ -29,6 +33,9 @@ const MAIN_CHANNEL_ID = process.env.MAIN_CHANNEL_ID || "";
 const TEST_CHANNEL_ID = process.env.TEST_CHANNEL_ID || "";
 const TIMEZONE = process.env.TIMEZONE || "Asia/Amman";
 const LEADERBOARD_LINK = process.env.LEADERBOARD_LINK || "";
+const HYPE_DB_PATH = process.env.HYPE_DB_PATH || "data/pixel.sqlite";
+const MEME_DROP_CHANNEL_ID = process.env.MEME_DROP_CHANNEL_ID || MAIN_CHANNEL_ID;
+const MEME_DROP_FOLDER = process.env.MEME_DROP_FOLDER || "data/memes";
 const CS_LOGO_URL = (process.env.CS_LOGO_URL || "")
   .trim()
   .replace(/^"(.*)"$/, "$1")
@@ -38,6 +45,8 @@ const DEFAULT_MEMBER_ROLE_ID =
   process.env.DEFAULT_MEMBER_ROLE_ID || "1465118775715168473";
 
 const MAX_TIMEOUT_MS = 2147483647;
+const MIN_MEME_DROP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const MAX_MEME_DROP_INTERVAL_MS = 48 * 60 * 60 * 1000;
 const scheduledJobs = new Map();
 const HYPE_MESSAGES = [
   "Top of the leaderboard let’s go! 🔥",
@@ -49,6 +58,49 @@ const HYPE_MESSAGES = [
   "Staying on top like pros 💯",
   "Let’s go team! Amazing job 🚀",
 ];
+const MEME_CAPTIONS = [
+  "Surprise meme drop! Hope this helps you debug today. 🚀",
+  "Time for a quick brain break. Enjoy! 👾",
+  "Pixel found this one in the cache. Fresh meme incoming. ⚡",
+  "Deploying smiles to production... done. 😎",
+  "Stack trace looks scary. Meme medicine delivered. 🛠️",
+  "Quick meme checkpoint before the next sprint. 🧠",
+  "Random drop from Pixel. No ticket required. 📦",
+];
+const SUPPORTED_MEME_EXTENSIONS = new Set([
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".gif",
+  ".webp",
+]);
+
+const absoluteDbPath = path.isAbsolute(HYPE_DB_PATH)
+  ? HYPE_DB_PATH
+  : path.join(process.cwd(), HYPE_DB_PATH);
+
+fs.mkdirSync(path.dirname(absoluteDbPath), { recursive: true });
+
+const db = new Database(absoluteDbPath);
+db.pragma("journal_mode = WAL");
+db.exec(`
+  CREATE TABLE IF NOT EXISTS hype_presses (
+    message_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    pressed_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    PRIMARY KEY (message_id, user_id)
+  );
+`);
+
+const insertHypePressStmt = db.prepare(`
+  INSERT OR IGNORE INTO hype_presses (message_id, user_id)
+  VALUES (?, ?)
+`);
+
+const countHypePressesStmt = db.prepare(`
+  SELECT COUNT(*) AS count FROM hype_presses
+  WHERE message_id = ?
+`);
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
@@ -167,6 +219,16 @@ function buildRankedMemberLines(members) {
 
 function getRandomHypeMessage() {
   return HYPE_MESSAGES[Math.floor(Math.random() * HYPE_MESSAGES.length)];
+}
+
+function registerHypePress(messageId, userId) {
+  const result = insertHypePressStmt.run(messageId, userId);
+  return result.changes === 1;
+}
+
+function getHypeCount(messageId) {
+  const row = countHypePressesStmt.get(messageId);
+  return row?.count || 0;
 }
 
 async function addDefaultReactions(message) {
@@ -346,6 +408,108 @@ function parseScheduleDate(raw) {
   return parsed;
 }
 
+function toAbsolutePath(targetPath) {
+  return path.isAbsolute(targetPath)
+    ? targetPath
+    : path.join(process.cwd(), targetPath);
+}
+
+function pickRandom(items) {
+  if (items.length === 0) {
+    return null;
+  }
+
+  return items[Math.floor(Math.random() * items.length)];
+}
+
+function getRandomMemeDropDelayMs() {
+  const range = MAX_MEME_DROP_INTERVAL_MS - MIN_MEME_DROP_INTERVAL_MS;
+  return MIN_MEME_DROP_INTERVAL_MS + Math.floor(Math.random() * (range + 1));
+}
+
+function getMemeFilesFromFolder(folderPath) {
+  let entries;
+  try {
+    entries = fs.readdirSync(folderPath, { withFileTypes: true });
+  } catch (error) {
+    console.error(
+      `[MemeDrop] Could not read meme folder at ${folderPath}: ${error.message}`
+    );
+    return [];
+  }
+
+  return entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+    .filter((name) => SUPPORTED_MEME_EXTENSIONS.has(path.extname(name).toLowerCase()))
+    .map((name) => path.join(folderPath, name));
+}
+
+async function postRandomMemeDrop() {
+  if (!MEME_DROP_CHANNEL_ID) {
+    console.error(
+      "[MemeDrop] MEME_DROP_CHANNEL_ID is not configured. Set it in .env."
+    );
+    return;
+  }
+
+  const channel = await client.channels.fetch(MEME_DROP_CHANNEL_ID);
+  if (!channel || channel.type !== ChannelType.GuildText) {
+    console.error("[MemeDrop] Configured meme drop channel is not a text channel.");
+    return;
+  }
+
+  const memeFolderPath = toAbsolutePath(MEME_DROP_FOLDER);
+  const memeFiles = getMemeFilesFromFolder(memeFolderPath);
+
+  if (memeFiles.length === 0) {
+    console.error(
+      `[MemeDrop] Meme folder is empty (or has no supported images): ${memeFolderPath}`
+    );
+    return;
+  }
+
+  const memeFilePath = pickRandom(memeFiles);
+  const caption = pickRandom(MEME_CAPTIONS);
+
+  const attachment = new AttachmentBuilder(memeFilePath, {
+    name: path.basename(memeFilePath),
+  });
+
+  await channel.send({
+    content: caption,
+    files: [attachment],
+  });
+
+  console.log(`[MemeDrop] Posted meme: ${path.basename(memeFilePath)}`);
+}
+
+function scheduleNextMemeDrop() {
+  const delayMs = getRandomMemeDropDelayMs();
+  const hours = (delayMs / (60 * 60 * 1000)).toFixed(2);
+
+  console.log(`[MemeDrop] Next meme drop scheduled in ${hours} hours.`);
+
+  setTimeout(async () => {
+    try {
+      await postRandomMemeDrop();
+    } catch (error) {
+      console.error("[MemeDrop] Failed to post meme:", error);
+    } finally {
+      scheduleNextMemeDrop();
+    }
+  }, delayMs);
+}
+
+function startMemeDropLoop() {
+  console.log(
+    `[MemeDrop] Autonomous meme drop loop started. Folder: ${toAbsolutePath(
+      MEME_DROP_FOLDER
+    )}`
+  );
+  scheduleNextMemeDrop();
+}
+
 async function postLeaderboard({
   target,
   title,
@@ -486,6 +650,7 @@ async function handlePostLeaderboard(interaction) {
 
 client.once("ready", () => {
   console.log(`Pixel is online as ${client.user.tag}`);
+  startMemeDropLoop();
 });
 
 client.on("interactionCreate", async (interaction) => {
@@ -499,8 +664,28 @@ client.on("interactionCreate", async (interaction) => {
 
     if (interaction.isButton()) {
       if (interaction.customId === "pixel_leaderboard_hype") {
+        const messageId = interaction.message?.id;
+
+        if (!messageId) {
+          await interaction.reply({
+            content: "Could not resolve leaderboard message for hype tracking.",
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const accepted = registerHypePress(messageId, interaction.user.id);
+        if (!accepted) {
+          await interaction.reply({
+            content: "You already hyped this leaderboard. One hype per member.",
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const totalHypes = getHypeCount(messageId);
         await interaction.reply({
-          content: getRandomHypeMessage(),
+          content: `${getRandomHypeMessage()}\nUnique hypes on this board: **${totalHypes}**`,
           ephemeral: true,
         });
       }
