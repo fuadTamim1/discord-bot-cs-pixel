@@ -65,6 +65,16 @@ Examples for `members`:
 - `Ahmad\nSara\nOmar\nLina`
 - `<@123456789012345678>, <@987654321098765432>, Lina`
 
+Meme drop controls:
+
+`/meme-drop start` - enable automatic meme posting loop.
+
+`/meme-drop stop` - pause automatic meme posting loop.
+
+`/meme-drop status` - show channel, folder, and next scheduled drop.
+
+`/meme-drop now` - trigger one immediate meme post.
+
 ## Notes
 
 - Scheduled jobs are in-memory for now. If bot restarts, pending scheduled posts are lost.

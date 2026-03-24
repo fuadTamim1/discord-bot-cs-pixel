@@ -74,6 +74,9 @@ const SUPPORTED_MEME_EXTENSIONS = new Set([
   ".gif",
   ".webp",
 ]);
+let memeDropLoopEnabled = true;
+let memeDropTimeout = null;
+let nextMemeDropAt = null;
 
 const absoluteDbPath = path.isAbsolute(HYPE_DB_PATH)
   ? HYPE_DB_PATH
@@ -178,11 +181,36 @@ const leaderboardCommand = new SlashCommandBuilder()
       .setRequired(false)
   );
 
+const memeDropCommand = new SlashCommandBuilder()
+  .setName("meme-drop")
+  .setDescription("Control Pixel's automatic meme drop")
+  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("start")
+      .setDescription("Enable automatic meme drops")
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("stop")
+      .setDescription("Disable automatic meme drops")
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("status")
+      .setDescription("Show meme drop loop status")
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("now")
+      .setDescription("Post one meme immediately")
+  );
+
 async function registerCommands() {
   const rest = new REST({ version: "10" }).setToken(TOKEN);
 
   await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), {
-    body: [leaderboardCommand.toJSON()],
+    body: [leaderboardCommand.toJSON(), memeDropCommand.toJSON()],
   });
 
   console.log("Slash commands registered for the guild.");
@@ -485,29 +513,126 @@ async function postRandomMemeDrop() {
 }
 
 function scheduleNextMemeDrop() {
+  if (!memeDropLoopEnabled) {
+    return;
+  }
+
+  if (memeDropTimeout) {
+    clearTimeout(memeDropTimeout);
+    memeDropTimeout = null;
+  }
+
   const delayMs = getRandomMemeDropDelayMs();
   const hours = (delayMs / (60 * 60 * 1000)).toFixed(2);
+  nextMemeDropAt = new Date(Date.now() + delayMs);
 
   console.log(`[MemeDrop] Next meme drop scheduled in ${hours} hours.`);
 
-  setTimeout(async () => {
+  memeDropTimeout = setTimeout(async () => {
     try {
       await postRandomMemeDrop();
     } catch (error) {
       console.error("[MemeDrop] Failed to post meme:", error);
     } finally {
+      memeDropTimeout = null;
+      nextMemeDropAt = null;
       scheduleNextMemeDrop();
     }
   }, delayMs);
 }
 
 function startMemeDropLoop() {
+  memeDropLoopEnabled = true;
+
   console.log(
     `[MemeDrop] Autonomous meme drop loop started. Folder: ${toAbsolutePath(
       MEME_DROP_FOLDER
     )}`
   );
   scheduleNextMemeDrop();
+}
+
+function stopMemeDropLoop() {
+  memeDropLoopEnabled = false;
+
+  if (memeDropTimeout) {
+    clearTimeout(memeDropTimeout);
+    memeDropTimeout = null;
+  }
+
+  nextMemeDropAt = null;
+  console.log("[MemeDrop] Autonomous meme drop loop stopped.");
+}
+
+function formatMemeDropStatus() {
+  const channelInfo = MEME_DROP_CHANNEL_ID
+    ? `<#${MEME_DROP_CHANNEL_ID}>`
+    : "Not configured";
+  const folderInfo = toAbsolutePath(MEME_DROP_FOLDER);
+  const nextRun = nextMemeDropAt
+    ? `<t:${Math.floor(nextMemeDropAt.getTime() / 1000)}:F>`
+    : "Not scheduled";
+
+  return [
+    `Enabled: **${memeDropLoopEnabled ? "Yes" : "No"}**`,
+    `Channel: ${channelInfo}`,
+    `Folder: ${folderInfo}`,
+    `Next drop: ${nextRun}`,
+  ].join("\n");
+}
+
+async function handleMemeDropControl(interaction) {
+  const subcommand = interaction.options.getSubcommand(true);
+
+  if (subcommand === "status") {
+    await interaction.reply({
+      content: `Meme drop status:\n${formatMemeDropStatus()}`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (subcommand === "start") {
+    if (memeDropLoopEnabled && memeDropTimeout) {
+      await interaction.reply({
+        content: `Meme drop loop is already running.\n${formatMemeDropStatus()}`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    startMemeDropLoop();
+    await interaction.reply({
+      content: `Started automatic meme drops.\n${formatMemeDropStatus()}`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (subcommand === "stop") {
+    if (!memeDropLoopEnabled) {
+      await interaction.reply({
+        content: "Meme drop loop is already stopped.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    stopMemeDropLoop();
+    await interaction.reply({
+      content: "Stopped automatic meme drops.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (subcommand === "now") {
+    await postRandomMemeDrop();
+    await interaction.reply({
+      content: "Posted one meme drop now (if a valid meme file was available).",
+      ephemeral: true,
+    });
+  }
 }
 
 async function postLeaderboard({
@@ -658,6 +783,8 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === "post-leaderboard") {
         await handlePostLeaderboard(interaction);
+      } else if (interaction.commandName === "meme-drop") {
+        await handleMemeDropControl(interaction);
       }
       return;
     }
