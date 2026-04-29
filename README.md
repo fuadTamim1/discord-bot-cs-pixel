@@ -7,7 +7,7 @@ Current MVP:
 - Target either main or test channel.
 - Post now or schedule for a specific datetime.
 - Old-style IEEE CS look with richer markdown text and optional bottom logo image.
-- Autonomous meme drop: randomly posts one local meme every 24-48 hours.
+- Autonomous meme drop: randomly posts one meme every 24-48 hours from Supabase Storage (or local fallback).
 
 ## 1) Setup
 
@@ -71,7 +71,7 @@ Meme drop controls:
 
 `/meme-drop stop` - pause automatic meme posting loop.
 
-`/meme-drop status` - show channel, folder, and next scheduled drop.
+`/meme-drop status` - show channel, source config, and next scheduled drop.
 
 `/meme-drop now` - trigger one immediate meme post.
 
@@ -87,7 +87,9 @@ Meme drop controls:
 - Hype button is limited to one press per user per leaderboard message.
 - Hype presses are persisted in SQLite (`HYPE_DB_PATH`) so restart does not reset limits.
 - Meme drop runs automatically after bot startup with no user command.
-- Meme drop picks one random image from `MEME_DROP_FOLDER` and posts it to `MEME_DROP_CHANNEL_ID` (or `MAIN_CHANNEL_ID` if meme channel is unset).
+- If Supabase vars are configured, meme drop picks a random image from `PIXEL_SUPABASE_BUCKET_NAME` (optionally scoped by `PIXEL_SUPABASE_MEME_PREFIX`).
+- Supabase endpoint defaults to `https://<PIXEL_SUPABASE_PROJECT_REF>.supabase.co/storage/v1/s3` and can be overridden by `PIXEL_SUPABASE_S3_ENDPOINT`.
+- If Supabase vars are missing, meme drop falls back to local `MEME_DROP_FOLDER`.
 - Meme drop delay is randomized between 24 and 48 hours for each cycle.
 - Supported meme file types: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`.
 - If meme folder is missing/empty, Pixel logs an internal error and skips that cycle.

@@ -2,6 +2,11 @@ require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
 const Database = require("better-sqlite3");
+const {
+  S3Client,
+  ListObjectsV2Command,
+  GetObjectCommand,
+} = require("@aws-sdk/client-s3");
 
 const {
   ActionRowBuilder,
@@ -36,6 +41,23 @@ const LEADERBOARD_LINK = process.env.LEADERBOARD_LINK || "";
 const HYPE_DB_PATH = process.env.HYPE_DB_PATH || "data/pixel.sqlite";
 const MEME_DROP_CHANNEL_ID = process.env.MEME_DROP_CHANNEL_ID || MAIN_CHANNEL_ID;
 const MEME_DROP_FOLDER = process.env.MEME_DROP_FOLDER || "data/memes";
+const PIXEL_SUPABASE_BUCKET_ACCESS_KEY =
+  process.env.PIXEL_SUPABASE_BUCKET_ACCESS_KEY || "";
+const PIXEL_SUPABASE_BUCKET_SECRET_KEY =
+  process.env.PIXEL_SUPABASE_BUCKET_SECRET_KEY ||
+  process.env.PIXEL_SUPABASE_BUCKET_SECERT_KEY ||
+  "";
+const PIXEL_SUPABASE_BUCKET_NAME = process.env.PIXEL_SUPABASE_BUCKET_NAME || "";
+const PIXEL_SUPABASE_PROJECT_REF = process.env.PIXEL_SUPABASE_PROJECT_REF || "";
+const PIXEL_SUPABASE_S3_REGION =
+  process.env.PIXEL_SUPABASE_S3_REGION || "us-east-1";
+const PIXEL_SUPABASE_S3_ENDPOINT =
+  process.env.PIXEL_SUPABASE_S3_ENDPOINT ||
+  (PIXEL_SUPABASE_PROJECT_REF
+    ? `https://${PIXEL_SUPABASE_PROJECT_REF}.supabase.co/storage/v1/s3`
+    : "");
+const PIXEL_SUPABASE_MEME_PREFIX =
+  process.env.PIXEL_SUPABASE_MEME_PREFIX || "";
 const CS_LOGO_URL = (process.env.CS_LOGO_URL || "")
   .trim()
   .replace(/^"(.*)"$/, "$1")
@@ -501,6 +523,94 @@ function getMemeFilesFromFolder(folderPath) {
     .map((name) => path.join(folderPath, name));
 }
 
+function hasSupabaseMemeConfig() {
+  return Boolean(
+    PIXEL_SUPABASE_BUCKET_ACCESS_KEY &&
+      PIXEL_SUPABASE_BUCKET_SECRET_KEY &&
+      PIXEL_SUPABASE_BUCKET_NAME &&
+      PIXEL_SUPABASE_S3_ENDPOINT
+  );
+}
+
+function normalizePrefix(prefix) {
+  return prefix.trim().replace(/^\/+/, "").replace(/\/+$/, "");
+}
+
+function createSupabaseS3Client() {
+  return new S3Client({
+    region: PIXEL_SUPABASE_S3_REGION,
+    endpoint: PIXEL_SUPABASE_S3_ENDPOINT,
+    forcePathStyle: true,
+    credentials: {
+      accessKeyId: PIXEL_SUPABASE_BUCKET_ACCESS_KEY,
+      secretAccessKey: PIXEL_SUPABASE_BUCKET_SECRET_KEY,
+    },
+  });
+}
+
+async function getMemeKeysFromSupabaseBucket(s3Client) {
+  const prefix = normalizePrefix(PIXEL_SUPABASE_MEME_PREFIX);
+  const listCommand = new ListObjectsV2Command({
+    Bucket: PIXEL_SUPABASE_BUCKET_NAME,
+    Prefix: prefix ? `${prefix}/` : undefined,
+  });
+
+  const response = await s3Client.send(listCommand);
+  const contents = response.Contents || [];
+
+  return contents
+    .map((item) => item.Key)
+    .filter(Boolean)
+    .filter((key) => !key.endsWith("/"))
+    .filter((key) =>
+      SUPPORTED_MEME_EXTENSIONS.has(path.extname(key).toLowerCase())
+    );
+}
+
+async function downloadMemeFromSupabase(s3Client, objectKey) {
+  const command = new GetObjectCommand({
+    Bucket: PIXEL_SUPABASE_BUCKET_NAME,
+    Key: objectKey,
+  });
+
+  const response = await s3Client.send(command);
+  if (!response.Body || typeof response.Body.transformToByteArray !== "function") {
+    throw new Error("Could not read object body from Supabase S3 response.");
+  }
+
+  const bytes = await response.Body.transformToByteArray();
+  return Buffer.from(bytes);
+}
+
+async function postRandomMemeDropFromSupabase(channel) {
+  const s3Client = createSupabaseS3Client();
+  const memeKeys = await getMemeKeysFromSupabaseBucket(s3Client);
+
+  if (memeKeys.length === 0) {
+    const prefix = normalizePrefix(PIXEL_SUPABASE_MEME_PREFIX);
+    const prefixMessage = prefix ? ` with prefix "${prefix}/"` : "";
+    console.error(
+      `[MemeDrop] Supabase bucket has no supported images${prefixMessage}. Bucket: ${PIXEL_SUPABASE_BUCKET_NAME}`
+    );
+    return;
+  }
+
+  const memeKey = pickRandom(memeKeys);
+  const memeBuffer = await downloadMemeFromSupabase(s3Client, memeKey);
+  const caption = pickRandom(MEME_CAPTIONS);
+
+  const attachment = new AttachmentBuilder(memeBuffer, {
+    name: path.basename(memeKey),
+  });
+
+  await channel.send({
+    content: caption,
+    files: [attachment],
+  });
+
+  console.log(`[MemeDrop] Posted meme from Supabase: ${memeKey}`);
+}
+
 async function handleReactMessage(interaction) {
   const channelId = interaction.options.getString("channel_id", true).trim();
   const messageId = interaction.options.getString("message_id", true).trim();
@@ -559,6 +669,11 @@ async function postRandomMemeDrop() {
   const channel = await client.channels.fetch(MEME_DROP_CHANNEL_ID);
   if (!channel || channel.type !== ChannelType.GuildText) {
     console.error("[MemeDrop] Configured meme drop channel is not a text channel.");
+    return;
+  }
+
+  if (hasSupabaseMemeConfig()) {
+    await postRandomMemeDropFromSupabase(channel);
     return;
   }
 
@@ -643,7 +758,14 @@ function formatMemeDropStatus() {
   const channelInfo = MEME_DROP_CHANNEL_ID
     ? `<#${MEME_DROP_CHANNEL_ID}>`
     : "Not configured";
-  const folderInfo = toAbsolutePath(MEME_DROP_FOLDER);
+  const usingSupabase = hasSupabaseMemeConfig();
+  const sourceInfo = usingSupabase
+    ? `Supabase bucket: ${PIXEL_SUPABASE_BUCKET_NAME}${
+        PIXEL_SUPABASE_MEME_PREFIX
+          ? ` (prefix: ${normalizePrefix(PIXEL_SUPABASE_MEME_PREFIX)}/)`
+          : ""
+      }`
+    : `Local folder: ${toAbsolutePath(MEME_DROP_FOLDER)}`;
   const nextRun = nextMemeDropAt
     ? `<t:${Math.floor(nextMemeDropAt.getTime() / 1000)}:F>`
     : "Not scheduled";
@@ -651,7 +773,7 @@ function formatMemeDropStatus() {
   return [
     `Enabled: **${memeDropLoopEnabled ? "Yes" : "No"}**`,
     `Channel: ${channelInfo}`,
-    `Folder: ${folderInfo}`,
+    `Source: ${sourceInfo}`,
     `Next drop: ${nextRun}`,
   ].join("\n");
 }
