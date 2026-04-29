@@ -82,13 +82,106 @@ const HYPE_MESSAGES = [
   "Let’s go team! Amazing job 🚀",
 ];
 const MEME_CAPTIONS = [
-  "Surprise meme drop! Hope this helps you debug today. 🚀",
-  "Time for a quick brain break. Enjoy! 👾",
-  "Pixel found this one in the cache. Fresh meme incoming. ⚡",
-  "Deploying smiles to production... done. 😎",
-  "Stack trace looks scary. Meme medicine delivered. 🛠️",
-  "Quick meme checkpoint before the next sprint. 🧠",
-  "Random drop from Pixel. No ticket required. 📦",
+  "Here.",
+  "Take it.",
+  "This one.",
+  "Next.",
+  "Again.",
+  "Another.",
+  "One more.",
+  "Keep going.",
+  "Carry on.",
+  "Continue.",
+  "Pause.",
+  "Break.",
+  "Reset.",
+  "Refresh.",
+  "Retry.",
+  "Try again.",
+  "Done?",
+  "Almost.",
+  "Focus.",
+  "Back.",
+  "Forward.",
+  "Move.",
+  "Go.",
+  "Now.",
+  "Later.",
+  "Why not.",
+  "Sure.",
+  "Fine.",
+  "Okay.",
+  "Alright.",
+  "That works.",
+  "Close enough.",
+  "It’s something.",
+  "Not bad.",
+  "Could be worse.",
+  "Still counts.",
+  "It helps.",
+  "Maybe.",
+  "Perhaps.",
+  "Who knows.",
+  "Let’s see.",
+  "Check this.",
+  "Look.",
+  "Here it is.",
+  "Found it.",
+  "This helps.",
+  "Use this.",
+  "Take a look.",
+  "Quick one.",
+  "Short one.",
+  "Small break.",
+  "Tiny break.",
+  "Just a sec.",
+  "Hold on.",
+  "Wait.",
+  "And again.",
+  "Repeat.",
+  "Same again.",
+  "Still here.",
+  "We continue.",
+  "Keep at it.",
+  "Don’t stop.",
+  "Stay on it.",
+  "Push.",
+  "Go on.",
+  "Back at it.",
+  "Let’s go.",
+  "Move on.",
+  "Next step.",
+  "Step by step.",
+  "Bit by bit.",
+  "Slowly.",
+  "Steady.",
+  "Easy.",
+  "Simple.",
+  "Done.",
+  "Finished?",
+  "Not yet.",
+  "Almost there.",
+  "Getting there.",
+  "Closer.",
+  "Keep trying.",
+  "Again.",
+  "Once more.",
+  "That’s it.",
+  "Good enough.",
+  "Works.",
+  "It runs.",
+  "No errors.",
+  "All good.",
+  "Looks fine.",
+  "Ship it.",
+  "Send it.",
+  "Deploy.",
+  "Test it.",
+  "Check it.",
+  "Run it.",
+  "Build.",
+  "Compile.",
+  "Execute.",
 ];
 const SUPPORTED_MEME_EXTENSIONS = new Set([
   ".jpg",
@@ -116,6 +209,13 @@ db.exec(`
     pressed_at INTEGER NOT NULL DEFAULT (unixepoch()),
     PRIMARY KEY (message_id, user_id)
   );
+
+  CREATE TABLE IF NOT EXISTS meme_drop_history (
+    source_scope TEXT NOT NULL,
+    meme_key TEXT NOT NULL,
+    posted_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    PRIMARY KEY (source_scope, meme_key)
+  );
 `);
 
 const insertHypePressStmt = db.prepare(`
@@ -126,6 +226,21 @@ const insertHypePressStmt = db.prepare(`
 const countHypePressesStmt = db.prepare(`
   SELECT COUNT(*) AS count FROM hype_presses
   WHERE message_id = ?
+`);
+
+const getPostedMemeKeysStmt = db.prepare(`
+  SELECT meme_key FROM meme_drop_history
+  WHERE source_scope = ?
+`);
+
+const insertPostedMemeStmt = db.prepare(`
+  INSERT OR IGNORE INTO meme_drop_history (source_scope, meme_key)
+  VALUES (?, ?)
+`);
+
+const resetPostedMemesStmt = db.prepare(`
+  DELETE FROM meme_drop_history
+  WHERE source_scope = ?
 `);
 
 const client = new Client({
@@ -500,6 +615,38 @@ function pickRandom(items) {
   return items[Math.floor(Math.random() * items.length)];
 }
 
+function getPostedMemeKeySet(sourceScope) {
+  const rows = getPostedMemeKeysStmt.all(sourceScope);
+  return new Set(rows.map((row) => row.meme_key));
+}
+
+function markMemeAsPosted(sourceScope, memeKey) {
+  insertPostedMemeStmt.run(sourceScope, memeKey);
+}
+
+function resetMemeCycle(sourceScope) {
+  resetPostedMemesStmt.run(sourceScope);
+}
+
+function pickNextUniqueMeme(availableMemeKeys, sourceScope) {
+  if (availableMemeKeys.length === 0) {
+    return null;
+  }
+
+  const postedMemeKeys = getPostedMemeKeySet(sourceScope);
+  let remainingMemeKeys = availableMemeKeys.filter(
+    (memeKey) => !postedMemeKeys.has(memeKey)
+  );
+
+  if (remainingMemeKeys.length === 0) {
+    resetMemeCycle(sourceScope);
+    remainingMemeKeys = [...availableMemeKeys];
+    console.log(`[MemeDrop] Meme cycle reset for source: ${sourceScope}`);
+  }
+
+  return pickRandom(remainingMemeKeys);
+}
+
 function getRandomMemeDropDelayMs() {
   const range = MAX_MEME_DROP_INTERVAL_MS - MIN_MEME_DROP_INTERVAL_MS;
   return MIN_MEME_DROP_INTERVAL_MS + Math.floor(Math.random() * (range + 1));
@@ -534,6 +681,15 @@ function hasSupabaseMemeConfig() {
 
 function normalizePrefix(prefix) {
   return prefix.trim().replace(/^\/+/, "").replace(/\/+$/, "");
+}
+
+function getSupabaseMemeSourceScope() {
+  const prefix = normalizePrefix(PIXEL_SUPABASE_MEME_PREFIX) || "_root";
+  return `supabase:${PIXEL_SUPABASE_BUCKET_NAME}:${prefix}`;
+}
+
+function getLocalMemeSourceScope(folderPath) {
+  return `local:${folderPath}`;
 }
 
 function createSupabaseS3Client() {
@@ -595,7 +751,8 @@ async function postRandomMemeDropFromSupabase(channel) {
     return;
   }
 
-  const memeKey = pickRandom(memeKeys);
+  const sourceScope = getSupabaseMemeSourceScope();
+  const memeKey = pickNextUniqueMeme(memeKeys, sourceScope);
   const memeBuffer = await downloadMemeFromSupabase(s3Client, memeKey);
   const caption = pickRandom(MEME_CAPTIONS);
 
@@ -607,6 +764,8 @@ async function postRandomMemeDropFromSupabase(channel) {
     content: caption,
     files: [attachment],
   });
+
+  markMemeAsPosted(sourceScope, memeKey);
 
   console.log(`[MemeDrop] Posted meme from Supabase: ${memeKey}`);
 }
@@ -687,7 +846,8 @@ async function postRandomMemeDrop() {
     return;
   }
 
-  const memeFilePath = pickRandom(memeFiles);
+  const sourceScope = getLocalMemeSourceScope(memeFolderPath);
+  const memeFilePath = pickNextUniqueMeme(memeFiles, sourceScope);
   const caption = pickRandom(MEME_CAPTIONS);
 
   const attachment = new AttachmentBuilder(memeFilePath, {
@@ -698,6 +858,8 @@ async function postRandomMemeDrop() {
     content: caption,
     files: [attachment],
   });
+
+  markMemeAsPosted(sourceScope, memeFilePath);
 
   console.log(`[MemeDrop] Posted meme: ${path.basename(memeFilePath)}`);
 }
