@@ -43,6 +43,8 @@ const CS_LOGO_URL = (process.env.CS_LOGO_URL || "")
 const PIXEL_EMOJI_ID = "1465668039256047671";
 const DEFAULT_MEMBER_ROLE_ID =
   process.env.DEFAULT_MEMBER_ROLE_ID || "1465118775715168473";
+const REACT_MESSAGE_ID = process.env.REACT_MESSAGE_ID || "1499069808174698516";
+const REACT_MESSAGE_CHANNEL_ID = process.env.REACT_MESSAGE_CHANNEL_ID || "";
 
 const MAX_TIMEOUT_MS = 2147483647;
 const MIN_MEME_DROP_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -181,6 +183,16 @@ const leaderboardCommand = new SlashCommandBuilder()
       .setRequired(false)
   );
 
+const reactMessageCommand = new SlashCommandBuilder()
+  .setName("react-message")
+  .setDescription("React to the pinned message with an emoji of your choice")
+  .addStringOption((option) =>
+    option
+      .setName("emoji")
+      .setDescription("Emoji to react with (e.g. 👍, ❤️, or a custom server emoji)")
+      .setRequired(true)
+  );
+
 const memeDropCommand = new SlashCommandBuilder()
   .setName("meme-drop")
   .setDescription("Control Pixel's automatic meme drop")
@@ -210,7 +222,11 @@ async function registerCommands() {
   const rest = new REST({ version: "10" }).setToken(TOKEN);
 
   await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), {
-    body: [leaderboardCommand.toJSON(), memeDropCommand.toJSON()],
+    body: [
+      leaderboardCommand.toJSON(),
+      memeDropCommand.toJSON(),
+      reactMessageCommand.toJSON(),
+    ],
   });
 
   console.log("Slash commands registered for the guild.");
@@ -471,6 +487,44 @@ function getMemeFilesFromFolder(folderPath) {
     .map((entry) => entry.name)
     .filter((name) => SUPPORTED_MEME_EXTENSIONS.has(path.extname(name).toLowerCase()))
     .map((name) => path.join(folderPath, name));
+}
+
+async function handleReactMessage(interaction) {
+  const emoji = interaction.options.getString("emoji", true);
+
+  if (!REACT_MESSAGE_CHANNEL_ID) {
+    await interaction.reply({
+      content:
+        "REACT_MESSAGE_CHANNEL_ID is not configured. Set it in .env so Pixel knows where to find the message.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+
+  try {
+    const channel = await client.channels.fetch(REACT_MESSAGE_CHANNEL_ID);
+    if (!channel || channel.type !== ChannelType.GuildText) {
+      await interaction.editReply({
+        content: "Could not find the configured channel.",
+      });
+      return;
+    }
+
+    const message = await channel.messages.fetch(REACT_MESSAGE_ID);
+    await message.react(emoji);
+
+    await interaction.editReply({
+      content: `Reacted with ${emoji} on the message!`,
+    });
+  } catch (error) {
+    console.error("[ReactMessage] Failed to react:", error.message);
+    await interaction.editReply({
+      content:
+        "Failed to react to the message. Make sure the emoji is valid and Pixel has permission to react.",
+    });
+  }
 }
 
 async function postRandomMemeDrop() {
@@ -785,6 +839,8 @@ client.on("interactionCreate", async (interaction) => {
         await handlePostLeaderboard(interaction);
       } else if (interaction.commandName === "meme-drop") {
         await handleMemeDropControl(interaction);
+      } else if (interaction.commandName === "react-message") {
+        await handleReactMessage(interaction);
       }
       return;
     }
