@@ -43,8 +43,7 @@ const CS_LOGO_URL = (process.env.CS_LOGO_URL || "")
 const PIXEL_EMOJI_ID = "1465668039256047671";
 const DEFAULT_MEMBER_ROLE_ID =
   process.env.DEFAULT_MEMBER_ROLE_ID || "1465118775715168473";
-const REACT_MESSAGE_ID = process.env.REACT_MESSAGE_ID || "1499069808174698516";
-const REACT_MESSAGE_CHANNEL_ID = process.env.REACT_MESSAGE_CHANNEL_ID || "";
+
 
 const MAX_TIMEOUT_MS = 2147483647;
 const MIN_MEME_DROP_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -185,11 +184,24 @@ const leaderboardCommand = new SlashCommandBuilder()
 
 const reactMessageCommand = new SlashCommandBuilder()
   .setName("react-message")
-  .setDescription("React to the pinned message with an emoji of your choice")
+  .setDescription("Make Pixel react to any message with a chosen emoji (admin only)")
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+  .addStringOption((option) =>
+    option
+      .setName("channel_id")
+      .setDescription("ID of the channel that contains the message")
+      .setRequired(true)
+  )
+  .addStringOption((option) =>
+    option
+      .setName("message_id")
+      .setDescription("ID of the message to react to")
+      .setRequired(true)
+  )
   .addStringOption((option) =>
     option
       .setName("emoji")
-      .setDescription("Emoji to react with (e.g. 👍, ❤️, or a custom server emoji)")
+      .setDescription("Emoji to react with (e.g. 👍, ❤️, or a custom server emoji like <:name:id>)")
       .setRequired(true)
   );
 
@@ -490,12 +502,21 @@ function getMemeFilesFromFolder(folderPath) {
 }
 
 async function handleReactMessage(interaction) {
-  const emoji = interaction.options.getString("emoji", true);
+  const channelId = interaction.options.getString("channel_id", true).trim();
+  const messageId = interaction.options.getString("message_id", true).trim();
+  const emoji = interaction.options.getString("emoji", true).trim();
 
-  if (!REACT_MESSAGE_CHANNEL_ID) {
+  if (!/^\d{17,20}$/.test(channelId)) {
     await interaction.reply({
-      content:
-        "REACT_MESSAGE_CHANNEL_ID is not configured. Set it in .env so Pixel knows where to find the message.",
+      content: "Invalid channel ID. It should be a numeric Discord snowflake.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (!/^\d{17,20}$/.test(messageId)) {
+    await interaction.reply({
+      content: "Invalid message ID. It should be a numeric Discord snowflake.",
       ephemeral: true,
     });
     return;
@@ -504,15 +525,15 @@ async function handleReactMessage(interaction) {
   await interaction.deferReply({ ephemeral: true });
 
   try {
-    const channel = await client.channels.fetch(REACT_MESSAGE_CHANNEL_ID);
+    const channel = await client.channels.fetch(channelId);
     if (!channel || channel.type !== ChannelType.GuildText) {
       await interaction.editReply({
-        content: "Could not find the configured channel.",
+        content: "Could not find a text channel with that ID.",
       });
       return;
     }
 
-    const message = await channel.messages.fetch(REACT_MESSAGE_ID);
+    const message = await channel.messages.fetch(messageId);
     await message.react(emoji);
 
     await interaction.editReply({
@@ -522,7 +543,7 @@ async function handleReactMessage(interaction) {
     console.error("[ReactMessage] Failed to react:", error.message);
     await interaction.editReply({
       content:
-        "Failed to react to the message. Make sure the emoji is valid and Pixel has permission to react.",
+        "Failed to react. Check that the channel ID, message ID, and emoji are all correct and that Pixel has permission to react in that channel.",
     });
   }
 }
