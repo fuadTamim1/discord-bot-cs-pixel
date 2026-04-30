@@ -268,7 +268,17 @@ const memeDropCommand = new SlashCommandBuilder()
   .addSubcommand((subcommand) =>
     subcommand
       .setName("schedule-next")
-      .setDescription("Override the next drop time to a specific time today")
+      .setDescription("Override the next drop time")
+      .addStringOption((option) =>
+        option
+          .setName("day")
+          .setDescription("Choose whether the override is for today or tomorrow")
+          .setRequired(true)
+          .addChoices(
+            { name: "Today", value: "today" },
+            { name: "Tomorrow", value: "tomorrow" }
+          )
+      )
       .addStringOption((option) =>
         option
           .setName("time")
@@ -828,7 +838,7 @@ function getTimezoneOffsetMs(timezone, date) {
   return tzDate - utcDate;
 }
 
-function overrideMemeDropTime(timeStr) {
+function overrideMemeDropTime(timeStr, day = "today") {
   // timeStr format: "HH:mm"
   if (!/^\d{2}:\d{2}$/.test(timeStr)) {
     return null;
@@ -836,6 +846,10 @@ function overrideMemeDropTime(timeStr) {
 
   const [hours, minutes] = timeStr.split(":").map(Number);
   if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+    return null;
+  }
+
+  if (day !== "today" && day !== "tomorrow") {
     return null;
   }
 
@@ -847,8 +861,10 @@ function overrideMemeDropTime(timeStr) {
   const target = new Date(localNow);
   target.setUTCHours(hours, minutes, 0, 0);
 
-  // If the time has already passed today, use tomorrow
-  if (target <= localNow) {
+  if (day === "tomorrow") {
+    target.setUTCDate(target.getUTCDate() + 1);
+  } else if (target <= localNow) {
+    // If the time has already passed today, use tomorrow
     target.setUTCDate(target.getUTCDate() + 1);
   }
 
@@ -875,7 +891,9 @@ function overrideMemeDropTime(timeStr) {
     }
   }, delay);
 
-  console.log(`[MemeDrop] Next drop overridden to ${timeStr} (${TIMEZONE}).`);
+  console.log(
+    `[MemeDrop] Next drop overridden to ${day} at ${timeStr} (${TIMEZONE}).`
+  );
   return targetUtc;
 }
 
@@ -958,12 +976,13 @@ async function handleMemeDropControl(interaction) {
   }
 
   if (subcommand === "schedule-next") {
+    const day = interaction.options.getString("day", true);
     const timeStr = interaction.options.getString("time", true).trim();
-    const targetUtc = overrideMemeDropTime(timeStr);
+    const targetUtc = overrideMemeDropTime(timeStr, day);
 
     if (!targetUtc) {
       await interaction.reply({
-        content: "Invalid time format. Use HH:mm, e.g. `18:30`.",
+        content: "Invalid schedule options. Use day = today/tomorrow and time in HH:mm format, e.g. 18:30.",
         ephemeral: true,
       });
       return;
@@ -971,10 +990,11 @@ async function handleMemeDropControl(interaction) {
 
     await interaction.reply({
       content:
-        `Next meme drop overridden to **${timeStr}** (${TIMEZONE}).\n` +
+        `Next meme drop overridden to **${day}** at **${timeStr}** (${TIMEZONE}).\n` +
         `Scheduled for <t:${Math.floor(targetUtc.getTime() / 1000)}:F>.`,
       ephemeral: true,
     });
+    return;
   }
 }
 
