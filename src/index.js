@@ -70,6 +70,7 @@ const DEFAULT_MEMBER_ROLE_ID =
 const MAX_TIMEOUT_MS = 2147483647;
 const MIN_MEME_DROP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const MAX_MEME_DROP_INTERVAL_MS = 48 * 60 * 60 * 1000;
+const MEME_DROP_COUNT = 3;
 const scheduledJobs = new Map();
 const HYPE_MESSAGES = [
   "Top of the leaderboard let’s go! 🔥",
@@ -80,108 +81,6 @@ const HYPE_MESSAGES = [
   "Big win keep pushing 🎯",
   "Staying on top like pros 💯",
   "Let’s go team! Amazing job 🚀",
-];
-const MEME_CAPTIONS = [
-  "Here.",
-  "Take it.",
-  "This one.",
-  "Next.",
-  "Again.",
-  "Another.",
-  "One more.",
-  "Keep going.",
-  "Carry on.",
-  "Continue.",
-  "Pause.",
-  "Break.",
-  "Reset.",
-  "Refresh.",
-  "Retry.",
-  "Try again.",
-  "Done?",
-  "Almost.",
-  "Focus.",
-  "Back.",
-  "Forward.",
-  "Move.",
-  "Go.",
-  "Now.",
-  "Later.",
-  "Why not.",
-  "Sure.",
-  "Fine.",
-  "Okay.",
-  "Alright.",
-  "That works.",
-  "Close enough.",
-  "It’s something.",
-  "Not bad.",
-  "Could be worse.",
-  "Still counts.",
-  "It helps.",
-  "Maybe.",
-  "Perhaps.",
-  "Who knows.",
-  "Let’s see.",
-  "Check this.",
-  "Look.",
-  "Here it is.",
-  "Found it.",
-  "This helps.",
-  "Use this.",
-  "Take a look.",
-  "Quick one.",
-  "Short one.",
-  "Small break.",
-  "Tiny break.",
-  "Just a sec.",
-  "Hold on.",
-  "Wait.",
-  "And again.",
-  "Repeat.",
-  "Same again.",
-  "Still here.",
-  "We continue.",
-  "Keep at it.",
-  "Don’t stop.",
-  "Stay on it.",
-  "Push.",
-  "Go on.",
-  "Back at it.",
-  "Let’s go.",
-  "Move on.",
-  "Next step.",
-  "Step by step.",
-  "Bit by bit.",
-  "Slowly.",
-  "Steady.",
-  "Easy.",
-  "Simple.",
-  "Done.",
-  "Finished?",
-  "Not yet.",
-  "Almost there.",
-  "Getting there.",
-  "Closer.",
-  "Keep trying.",
-  "Again.",
-  "Once more.",
-  "That’s it.",
-  "Good enough.",
-  "Works.",
-  "It runs.",
-  "No errors.",
-  "All good.",
-  "Looks fine.",
-  "Ship it.",
-  "Send it.",
-  "Deploy.",
-  "Test it.",
-  "Check it.",
-  "Run it.",
-  "Build.",
-  "Compile.",
-  "Execute.",
 ];
 const SUPPORTED_MEME_EXTENSIONS = new Set([
   ".jpg",
@@ -364,7 +263,18 @@ const memeDropCommand = new SlashCommandBuilder()
   .addSubcommand((subcommand) =>
     subcommand
       .setName("now")
-      .setDescription("Post one meme immediately")
+      .setDescription("Post memes immediately")
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("schedule-next")
+      .setDescription("Override the next drop time to a specific time today")
+      .addStringOption((option) =>
+        option
+          .setName("time")
+          .setDescription(`Time in HH:mm format (uses ${TIMEZONE} timezone, e.g. 18:30)`)
+          .setRequired(true)
+      )
   );
 
 async function registerCommands() {
@@ -752,22 +662,20 @@ async function postRandomMemeDropFromSupabase(channel) {
   }
 
   const sourceScope = getSupabaseMemeSourceScope();
-  const memeKey = pickNextUniqueMeme(memeKeys, sourceScope);
-  const memeBuffer = await downloadMemeFromSupabase(s3Client, memeKey);
-  const caption = pickRandom(MEME_CAPTIONS);
 
-  const attachment = new AttachmentBuilder(memeBuffer, {
-    name: path.basename(memeKey),
-  });
+  for (let i = 0; i < MEME_DROP_COUNT; i++) {
+    const memeKey = pickNextUniqueMeme(memeKeys, sourceScope);
+    if (!memeKey) break;
 
-  await channel.send({
-    content: caption,
-    files: [attachment],
-  });
+    const memeBuffer = await downloadMemeFromSupabase(s3Client, memeKey);
+    const attachment = new AttachmentBuilder(memeBuffer, {
+      name: path.basename(memeKey),
+    });
 
-  markMemeAsPosted(sourceScope, memeKey);
-
-  console.log(`[MemeDrop] Posted meme from Supabase: ${memeKey}`);
+    await channel.send({ files: [attachment] });
+    markMemeAsPosted(sourceScope, memeKey);
+    console.log(`[MemeDrop] Posted meme from Supabase: ${memeKey}`);
+  }
 }
 
 async function handleReactMessage(interaction) {
@@ -847,21 +755,19 @@ async function postRandomMemeDrop() {
   }
 
   const sourceScope = getLocalMemeSourceScope(memeFolderPath);
-  const memeFilePath = pickNextUniqueMeme(memeFiles, sourceScope);
-  const caption = pickRandom(MEME_CAPTIONS);
 
-  const attachment = new AttachmentBuilder(memeFilePath, {
-    name: path.basename(memeFilePath),
-  });
+  for (let i = 0; i < MEME_DROP_COUNT; i++) {
+    const memeFilePath = pickNextUniqueMeme(memeFiles, sourceScope);
+    if (!memeFilePath) break;
 
-  await channel.send({
-    content: caption,
-    files: [attachment],
-  });
+    const attachment = new AttachmentBuilder(memeFilePath, {
+      name: path.basename(memeFilePath),
+    });
 
-  markMemeAsPosted(sourceScope, memeFilePath);
-
-  console.log(`[MemeDrop] Posted meme: ${path.basename(memeFilePath)}`);
+    await channel.send({ files: [attachment] });
+    markMemeAsPosted(sourceScope, memeFilePath);
+    console.log(`[MemeDrop] Posted meme: ${path.basename(memeFilePath)}`);
+  }
 }
 
 function scheduleNextMemeDrop() {
@@ -914,6 +820,63 @@ function stopMemeDropLoop() {
 
   nextMemeDropAt = null;
   console.log("[MemeDrop] Autonomous meme drop loop stopped.");
+}
+
+function getTimezoneOffsetMs(timezone, date) {
+  const utcDate = new Date(date.toLocaleString("en-US", { timeZone: "UTC" }));
+  const tzDate = new Date(date.toLocaleString("en-US", { timeZone: timezone }));
+  return tzDate - utcDate;
+}
+
+function overrideMemeDropTime(timeStr) {
+  // timeStr format: "HH:mm"
+  if (!/^\d{2}:\d{2}$/.test(timeStr)) {
+    return null;
+  }
+
+  const [hours, minutes] = timeStr.split(":").map(Number);
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+    return null;
+  }
+
+  const now = new Date();
+  const offsetMs = getTimezoneOffsetMs(TIMEZONE, now);
+
+  // Build today's date at HH:mm in the target timezone (as fake-UTC arithmetic)
+  const localNow = new Date(now.getTime() + offsetMs);
+  const target = new Date(localNow);
+  target.setUTCHours(hours, minutes, 0, 0);
+
+  // If the time has already passed today, use tomorrow
+  if (target <= localNow) {
+    target.setUTCDate(target.getUTCDate() + 1);
+  }
+
+  // Convert back to real UTC
+  const targetUtc = new Date(target.getTime() - offsetMs);
+  const delay = targetUtc.getTime() - now.getTime();
+
+  if (memeDropTimeout) {
+    clearTimeout(memeDropTimeout);
+    memeDropTimeout = null;
+  }
+
+  nextMemeDropAt = targetUtc;
+
+  memeDropTimeout = setTimeout(async () => {
+    try {
+      await postRandomMemeDrop();
+    } catch (error) {
+      console.error("[MemeDrop] Failed to post meme:", error);
+    } finally {
+      memeDropTimeout = null;
+      nextMemeDropAt = null;
+      scheduleNextMemeDrop();
+    }
+  }, delay);
+
+  console.log(`[MemeDrop] Next drop overridden to ${timeStr} (${TIMEZONE}).`);
+  return targetUtc;
 }
 
 function formatMemeDropStatus() {
@@ -986,9 +949,30 @@ async function handleMemeDropControl(interaction) {
   }
 
   if (subcommand === "now") {
+    await interaction.deferReply({ ephemeral: true });
     await postRandomMemeDrop();
+    await interaction.editReply({
+      content: `Posted ${MEME_DROP_COUNT} memes now (if enough valid meme files were available).`,
+    });
+    return;
+  }
+
+  if (subcommand === "schedule-next") {
+    const timeStr = interaction.options.getString("time", true).trim();
+    const targetUtc = overrideMemeDropTime(timeStr);
+
+    if (!targetUtc) {
+      await interaction.reply({
+        content: "Invalid time format. Use HH:mm, e.g. `18:30`.",
+        ephemeral: true,
+      });
+      return;
+    }
+
     await interaction.reply({
-      content: "Posted one meme drop now (if a valid meme file was available).",
+      content:
+        `Next meme drop overridden to **${timeStr}** (${TIMEZONE}).\n` +
+        `Scheduled for <t:${Math.floor(targetUtc.getTime() / 1000)}:F>.`,
       ephemeral: true,
     });
   }
